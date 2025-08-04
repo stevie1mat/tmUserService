@@ -63,7 +63,6 @@ func main() {
 		w.Write([]byte("TradeMinutes User Service is running"))
 	})
 
-	// Setup routes
 	routes.SetupRoutes(router)
 
 	// Start server
