@@ -27,4 +27,4 @@ require (
 	golang.org/x/text v0.17.0 // indirect
 )
 
-replace github.com/ElioCloud/shared-models => ../shared-models
+replace github.com/ElioCloud/shared-models => github.com/stevie1mat/shared-models v0.0.0-20250731020008-a185830727d0
