@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -251,12 +252,46 @@ func GetAllUsersHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	collection := config.GetDB().Collection("MyClusterCol")
+	// Add debugging
+	fmt.Println("🔍 GetAllUsersHandler called")
+	fmt.Println("🔍 Request URL:", r.URL.String())
+
+	// Get search query parameter
+	searchQuery := r.URL.Query().Get("q")
+	fmt.Println("🔍 Search query:", searchQuery)
+
+	// Check if database is connected
+	db := config.GetDB()
+	if db == nil {
+		fmt.Println("❌ Database is nil")
+		http.Error(w, "Database connection failed", http.StatusInternalServerError)
+		return
+	}
+	fmt.Println("✅ Database connected:", db.Name())
+
+	collection := db.Collection("MyClusterCol")
+	fmt.Println("✅ Collection accessed:", collection.Name())
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cursor, err := collection.Find(ctx, bson.M{})
+	var filter bson.M
+	if searchQuery != "" {
+		// Search by name or email (case-insensitive)
+		filter = bson.M{
+			"$or": []bson.M{
+				{"name": bson.M{"$regex": searchQuery, "$options": "i"}},
+				{"email": bson.M{"$regex": searchQuery, "$options": "i"}},
+			},
+		}
+	} else {
+		filter = bson.M{}
+	}
+	fmt.Println("🔍 Filter:", filter)
+
+	cursor, err := collection.Find(ctx, filter)
 	if err != nil {
+		fmt.Println("❌ Database query error:", err)
 		http.Error(w, "Failed to fetch users", http.StatusInternalServerError)
 		return
 	}
@@ -264,16 +299,26 @@ func GetAllUsersHandler(w http.ResponseWriter, r *http.Request) {
 
 	var users []models.User
 	if err = cursor.All(ctx, &users); err != nil {
+		fmt.Println("❌ Cursor decode error:", err)
 		http.Error(w, "Failed to decode users", http.StatusInternalServerError)
 		return
 	}
+
+	fmt.Println("✅ Found", len(users), "users")
 
 	// Remove passwords from response
 	for i := range users {
 		users[i].Password = ""
 	}
 
-	json.NewEncoder(w).Encode(users)
+	// Return in the format expected by the frontend
+	response := map[string]interface{}{
+		"data":  users,
+		"count": len(users),
+	}
+
+	fmt.Println("✅ Sending response with", len(users), "users")
+	json.NewEncoder(w).Encode(response)
 }
 
 // AdminDeleteUserHandler deletes a user (for admin)
@@ -289,7 +334,7 @@ func AdminDeleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract user ID from URL
-	userID := strings.TrimPrefix(r.URL.Path, "/api/auth/admin/delete/")
+	userID := strings.TrimPrefix(r.URL.Path, "/api/admin/delete/")
 	if userID == "" {
 		http.Error(w, "User ID is required", http.StatusBadRequest)
 		return
@@ -376,4 +421,105 @@ func UpdateCreditsHandler(w http.ResponseWriter, r *http.Request) {
 		"message": "Credits updated successfully",
 		"credits": request.Credits,
 	})
+}
+
+// OAuthHandler handles OAuth user registration/login
+func OAuthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	var oauthData struct {
+		Email    string `json:"email"`
+		Name     string `json:"name"`
+		Provider string `json:"provider,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&oauthData); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate required fields
+	if oauthData.Email == "" || oauthData.Name == "" {
+		http.Error(w, "Email and name are required", http.StatusBadRequest)
+		return
+	}
+
+	collection := config.GetDB().Collection("MyClusterCol")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Check if user already exists
+	var existingUser models.User
+	err := collection.FindOne(ctx, bson.M{"email": strings.ToLower(oauthData.Email)}).Decode(&existingUser)
+
+	if err == nil {
+		// User exists, generate JWT token
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+			"email": existingUser.Email,
+			"exp":   time.Now().Add(time.Hour * 24 * 7).Unix(), // 7 days
+		})
+
+		tokenString, err := token.SignedString([]byte(os.Getenv("JWT_SECRET")))
+		if err != nil {
+			http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+			return
+		}
+
+		// Remove password from response
+		existingUser.Password = ""
+
+		response := map[string]interface{}{
+			"token": tokenString,
+			"user":  existingUser,
+		}
+
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	// User doesn't exist, create new user
+	user := models.User{
+		ID:        primitive.NewObjectID(),
+		Email:     strings.ToLower(oauthData.Email),
+		Name:      oauthData.Name,
+		Password:  "",  // OAuth users don't have passwords
+		Credits:   200, // Starting credits
+		CreatedAt: time.Now().Unix(),
+	}
+
+	_, err = collection.InsertOne(ctx, user)
+	if err != nil {
+		http.Error(w, "Failed to create user", http.StatusInternalServerError)
+		return
+	}
+
+	// Generate JWT token
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"email": user.Email,
+		"exp":   time.Now().Add(time.Hour * 24 * 7).Unix(), // 7 days
+	})
+
+	tokenString, err := token.SignedString([]byte(os.Getenv("JWT_SECRET")))
+	if err != nil {
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
+	// Remove password from response
+	user.Password = ""
+
+	response := map[string]interface{}{
+		"token": tokenString,
+		"user":  user,
+	}
+
+	json.NewEncoder(w).Encode(response)
 }
