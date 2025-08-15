@@ -423,6 +423,90 @@ func UpdateCreditsHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// DeductCreditsHandler deducts credits from user account
+func DeductCreditsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	var request struct {
+		UserId  string `json:"userId"`
+		Credits int    `json:"credits"`
+		Reason  string `json:"reason"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if request.Credits <= 0 {
+		http.Error(w, "Credits to deduct must be positive", http.StatusBadRequest)
+		return
+	}
+
+	collection := config.GetDB().Collection("MyClusterCol")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// First, get current user to check available credits
+	var user models.User
+	objectID, err := primitive.ObjectIDFromHex(request.UserId)
+	if err != nil {
+		http.Error(w, "Invalid user ID", http.StatusBadRequest)
+		return
+	}
+
+	err = collection.FindOne(ctx, bson.M{"_id": objectID}).Decode(&user)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	if user.Credits < request.Credits {
+		http.Error(w, "Insufficient credits", http.StatusPaymentRequired)
+		return
+	}
+
+	// Deduct credits
+	result, err := collection.UpdateOne(
+		ctx,
+		bson.M{"_id": objectID},
+		bson.M{"$inc": bson.M{"credits": -request.Credits}},
+	)
+
+	if err != nil {
+		http.Error(w, "Failed to deduct credits", http.StatusInternalServerError)
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// Get updated user to return remaining credits
+	var updatedUser models.User
+	err = collection.FindOne(ctx, bson.M{"_id": objectID}).Decode(&updatedUser)
+	if err != nil {
+		http.Error(w, "Failed to get updated user", http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message":           "Credits deducted successfully",
+		"credits_deducted":  request.Credits,
+		"remaining_credits": updatedUser.Credits,
+		"reason":            request.Reason,
+	})
+}
+
 // OAuthHandler handles OAuth user registration/login
 func OAuthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")

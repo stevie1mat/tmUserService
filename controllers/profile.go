@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -377,10 +378,14 @@ func UploadCoverImageHandler(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		// Successfully uploaded to Cloudinary
 		imageData = cloudinaryURL
-		log.Printf("✅ Cover image uploaded to Cloudinary for user %s", email)
+		log.Printf("✅ Cover image uploaded to Cloudinary for user %s: %s", email, cloudinaryURL)
 	} else {
 		// Fallback to base64 storage
 		log.Printf("⚠️  Cloudinary upload failed for user %s: %v, falling back to base64", email, err)
+		log.Printf("🔍 Cloudinary config check - Cloud Name: %s, API Key: %s, API Secret: %s",
+			os.Getenv("CLOUDINARY_CLOUD_NAME"),
+			os.Getenv("CLOUDINARY_API_KEY"),
+			os.Getenv("CLOUDINARY_API_SECRET") != "")
 		base64Data := base64.StdEncoding.EncodeToString(fileBytes)
 		imageData = "data:" + header.Header.Get("Content-Type") + ";base64," + base64Data
 	}

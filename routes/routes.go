@@ -26,6 +26,7 @@ func SetupRoutes(router *mux.Router) {
 	authRouter.HandleFunc("/users", controllers.GetAllUsersHandler).Methods("GET", "OPTIONS")
 	authRouter.HandleFunc("/admin/delete/{id}", controllers.AdminDeleteUserHandler).Methods("DELETE", "OPTIONS")
 	authRouter.HandleFunc("/update-credits", controllers.UpdateCreditsHandler).Methods("PUT", "OPTIONS")
+	authRouter.HandleFunc("/deduct-credits", controllers.DeductCreditsHandler).Methods("POST", "OPTIONS")
 
 	// Profile routes (protected)
 	profileRouter := router.PathPrefix("/api/profile").Subrouter()
